@@ -29,6 +29,42 @@ def pose_to_pos_rot(pose):
 def pose_to_mat(pose):
     return pos_rot_to_mat(*pose_to_pos_rot(pose))
 
+def pose7_to_mat(pose7):
+    """
+    pose7: [:, 7] with x,y,z,qw,qx,qy,qz
+    """
+    qw = pose7[...,3]
+    qx = pose7[...,4]
+    qy = pose7[...,5]
+    qz = pose7[...,6]
+    q11 = qx * qx
+    q22 = qy * qy
+    q33 = qz * qz
+    q01 = qw * qx
+    q02 = qw * qy
+    q03 = qw * qz
+    q12 = qx * qy
+    q13 = qx * qz
+    q23 = qy * qz
+
+    shape = pose7.shape[:-1]
+    mat = np.zeros(shape + (4,4), dtype=pose7.dtype)
+    mat[...,0,0] = 1.0 - 2.0 * q22 - 2.0 * q33
+    mat[...,0,1] = 2.0 * (q12 - q03)
+    mat[...,0,2] = 2.0 * (q13 + q02)
+    mat[...,1,0] = 2.0 * (q12 + q03)
+    mat[...,1,1] = 1.0 - 2.0 * q11 - 2.0 * q33
+    mat[...,1,2] = 2.0 * (q23 - q01)
+    mat[...,2,0] = 2.0 * (q13 - q02)
+    mat[...,2,1] = 2.0 * (q23 + q01)
+    mat[...,2,2] = 1.0 - 2.0 * q11 - 2.0 * q22
+
+    mat[...,:3,3] = pose7[...,:3]
+
+    mat[...,3,3] = 1
+
+    return mat
+
 def mat_to_pose(mat):
     return pos_rot_to_pose(*mat_to_pos_rot(mat))
 
@@ -97,7 +133,7 @@ def mat_to_rot6d(mat):
     out = mat[..., :2, :].copy().reshape(batch_dim + (6,))
     return out
 
-def mat_to_pose10d(mat):
+def mat_to_pose9d(mat):
     pos = mat[...,:3,3]
     rotmat = mat[...,:3,:3]
     d6 = mat_to_rot6d(rotmat)
