@@ -51,29 +51,26 @@ class FlipUpDataset(BaseDataset):
         key_latency_steps = dict()
         obs_shape_meta = shape_meta['obs']
         for key, attr in obs_shape_meta.items():
-            # solve obs type
+            # obtain obs type
             type = attr.get('type', 'low_dim')
             if type == 'rgb':
                 obs_rgb_keys.append(key)
             elif type == 'low_dim':
                 obs_lowdim_keys.append(key)
 
-            if key.endswith('eef_pos'):
-                self.num_robot += 1
-
-            # solve obs_horizon
+            # obtain obs_horizon info
             horizon = shape_meta['obs'][key]['horizon']
             key_horizon[key] = horizon
 
-            # solve latency_steps
+            # obtain latency_steps info
             latency_steps = shape_meta['obs'][key]['latency_steps']
             key_latency_steps[key] = latency_steps
 
-            # solve down_sample_steps
+            # obtain down_sample_steps info
             down_sample_steps = shape_meta['obs'][key]['down_sample_steps']
             key_down_sample_steps[key] = down_sample_steps
 
-        # solve action
+        # obtain action info
         key_horizon['action'] = shape_meta['action']['horizon']
         key_latency_steps['action'] = shape_meta['action']['latency_steps']
         key_down_sample_steps['action'] = shape_meta['action']['down_sample_steps']
@@ -201,6 +198,8 @@ class FlipUpDataset(BaseDataset):
                 this_normalizer = get_range_normalizer_from_stat(stat)
             elif 'rot_axis_angle' in key:
                 this_normalizer = get_identity_normalizer_from_stat(stat)
+            elif 'wrench' in key:
+                this_normalizer = get_range_normalizer_from_stat(stat)
             else:
                 raise RuntimeError('unsupported')
             normalizer[key] = this_normalizer
