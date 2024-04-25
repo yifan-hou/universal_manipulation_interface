@@ -300,12 +300,12 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 
                 def log_action_mse(step_log, category, pred_action, gt_action):
                     B, T, _ = pred_action.shape
-                    pred_action = pred_action.view(B, T, -1, 10)
-                    gt_action = gt_action.view(B, T, -1, 10)
+                    pred_action = pred_action.view(B, T, -1, 9)
+                    gt_action = gt_action.view(B, T, -1, 9)
                     step_log[f'{category}_action_mse_error'] = torch.nn.functional.mse_loss(pred_action, gt_action)
                     step_log[f'{category}_action_mse_error_pos'] = torch.nn.functional.mse_loss(pred_action[..., :3], gt_action[..., :3])
                     step_log[f'{category}_action_mse_error_rot'] = torch.nn.functional.mse_loss(pred_action[..., 3:9], gt_action[..., 3:9])
-                    step_log[f'{category}_action_mse_error_width'] = torch.nn.functional.mse_loss(pred_action[..., 9], gt_action[..., 9])
+                    # step_log[f'{category}_action_mse_error_width'] = torch.nn.functional.mse_loss(pred_action[..., 9], gt_action[..., 9])
                 # run diffusion sampling on a training batch
                 if (self.epoch % cfg.training.sample_every) == 0 and accelerator.is_main_process:
                     with torch.no_grad():
@@ -313,6 +313,8 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                         batch = dict_apply(train_sampling_batch, lambda x: x.to(device, non_blocking=True))
                         gt_action = batch['action']
                         pred_action = policy.predict_action(batch['obs'], None)['action_pred']
+                        # print("gt_action.shape: ", gt_action.shape)
+                        # print("pred_action.shape: ", pred_action.shape)
                         log_action_mse(step_log, 'train', pred_action, gt_action)
 
                         if len(val_dataloader) > 0:

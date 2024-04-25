@@ -1,10 +1,9 @@
-name: umi
+name: flip_up
 
-camera_obs_latency: 0.125
-robot_obs_latency: 0.0001
-gripper_obs_latency: 0.02
-dataset_frequeny: 0 #59.94
-obs_down_sample_steps: 3 # 3, 1
+# camera_obs_latency: 0.125
+# robot_obs_latency: 0.0001
+obs_down_sample_steps: 10 # 3, 1
+action_down_sample_steps: 10 # 3, 1
 
 low_dim_obs_horizon: 2
 img_obs_horizon: 2
@@ -14,6 +13,7 @@ ignore_proprioception: False
 
 shape_meta: &shape_meta
   # acceptable types: rgb, low_dim
+  # fields under raw and obs must be consistent with FlipUpDataset.raw_to_obs_action()
   raw: # describes what exists in data
     camera0_rgb:
       shape: [3, 224, 224]
@@ -76,14 +76,11 @@ shape_meta: &shape_meta
   action: # computed from robot command
     shape: [9]
     horizon: ${task.action_horizon}
-    down_sample_steps: ${task.obs_down_sample_steps} # int
+    down_sample_steps: ${task.action_down_sample_steps} # int
     rotation_rep: rotation_6d
 
 task_name: &task_name flipup
-dataset_path: /home/yifanhou/git/simkit/data/flip_up
-# pose_repr: &pose_repr
-#   obs_pose_repr: relative # abs or rel
-#   action_pose_repr: relative # abs or rel or delta
+dataset_path: /home/yifanhou/data/flip_up_2
 
 env_runner:
   _target_: diffusion_policy.env_runner.real_pusht_image_runner.RealPushTImageRunner
@@ -92,10 +89,8 @@ dataset:
   _target_: diffusion_policy.dataset.flip_up_dataset.FlipUpDataset
   shape_meta: *shape_meta
   dataset_path: ${task.dataset_path}
-  cache_dir: null
-  # pose_repr: *pose_repr
+  # cache_dir: null
   action_padding: False
   temporally_independent_normalization: False
-  repeat_frame_prob: 0.0
   seed: 42
   val_ratio: 0.05

@@ -21,33 +21,36 @@ def get_val_mask(n_episodes, val_ratio, seed=0):
 class SequenceSampler:
     def __init__(self,
         shape_meta:dict,
-        replay_buffer_raw: ReplayBuffer,
         replay_buffer: dict,
         key_horizon: dict, # obs: observation horizon, action: action horizon
         key_down_sample_steps: dict,
         episode_mask: Optional[np.ndarray]=None,
         action_padding: bool=False,
     ):
-        episode_ends = replay_buffer_raw.episode_ends[:]
-
-        # create indices, including (current_idx, start_idx, end_idx)
-        # Note that all episodes are concantenated. episode_ends is a list of end indices for all episodes.
-        # indices describes which episode a certain id belongs to.
-        # for i, indices[i] has the following info:
-        #   current_idx: query id. Equals to i
-        #   start_idx: idx of the beginning of the episode that contains i
-        #   end_idx: idx of the end of the episode that contains i
-        indices = list()
-        for i in range(len(episode_ends)):
-            if episode_mask is not None and not episode_mask[i]:
+        # Computes indices. indices[i] = (epi_id, epi_len, id)
+        #   epi_id: which episode the index i belongs to.
+        #   epi_len: length of the episode.
+        #   id: the index within the episode.
+        # here, index i is assumed to be using the low dim index.
+        episodes_length = replay_buffer['meta']['episode_low_dim_len'][:]
+        episodes_length_for_query = episodes_length.copy()
+        if not action_padding:
+            # if no action padding, truncate the indices to query so the last query point
+            #  still has access to the whole horizon of actions
+            episodes_length_for_query -= (key_horizon['action'] - 1) * key_down_sample_steps['action']
+        assert(np.min(episodes_length) > 0)
+        epi_id = []
+        epi_len = []
+        ids = []
+        for array_index, array_length in enumerate(episodes_length_for_query):
+            if episode_mask is not None and not episode_mask[array_index]:
                 # skip episode
                 continue
-            start_idx = 0 if i == 0 else episode_ends[i-1]
-            end_idx = episode_ends[i]
-            for current_idx in range(start_idx, end_idx):
-                if not action_padding and end_idx < current_idx + (key_horizon['action'] - 1) * key_down_sample_steps['action'] + 1:
-                    continue
-                indices.append((current_idx, start_idx, end_idx))
+            epi_id.extend([array_index] * array_length)
+            epi_len.extend([episodes_length[array_index]] * array_length)
+            ids.extend(range(array_length))
+            # assert(epi_len[-1] >= ids[-1] + (key_horizon['action'] - 1) * key_down_sample_steps['action'] + 1)
+        indices = list(zip(epi_id, epi_len, ids))
 
         self.shape_meta = shape_meta
         self.replay_buffer = replay_buffer
@@ -56,20 +59,22 @@ class SequenceSampler:
         self.key_horizon = key_horizon
         self.key_down_sample_steps = key_down_sample_steps
 
-        self.ignore_rgb_is_applied = False # speed up the interation when getting normalizaer
+        self.ignore_rgb_is_applied = False # speed up the interation when getting normalizer
 
     def __len__(self):
         return len(self.indices)
 
     def sample_sequence(self, idx):
-        current_idx, start_idx, end_idx = self.indices[idx]
+        epi_id, epi_len, id = self.indices[idx]
+        episode = f'episode_{epi_id}'
+        data_episode = self.replay_buffer['data'][episode]
         obs_dict = dict()
         action_array = []
 
         # observation
         obs_shape_meta = self.shape_meta['obs']
         for key, attr in obs_shape_meta.items():
-            input_arr = self.replay_buffer[key]
+            input_arr = data_episode[key]
             this_horizon = self.key_horizon[key]
             this_downsample_steps = self.key_down_sample_steps[key]
 
@@ -77,10 +82,10 @@ class SequenceSampler:
             if type == 'rgb':
                 if self.ignore_rgb_is_applied:
                     continue
-                num_valid = min(this_horizon, (current_idx - start_idx) // this_downsample_steps + 1)
-                slice_start = current_idx - (num_valid - 1) * this_downsample_steps
-
-                output = input_arr[slice_start: current_idx + 1: this_downsample_steps]
+                num_valid = min(this_horizon, id // this_downsample_steps + 1)
+                slice_start = id - (num_valid - 1) * this_downsample_steps
+                assert(slice_start >= 0)
+                output = input_arr[slice_start: id + 1: this_downsample_steps]
                 assert output.shape[0] == num_valid
 
                 # solve padding
@@ -93,21 +98,19 @@ class SequenceSampler:
                 output = np.moveaxis(output, -1, 1).astype(np.float32) / 255.
             elif type == 'low_dim':
                 idx_in_obs_horizon = np.array(
-                    [current_idx - idx * this_downsample_steps for idx in range(this_horizon)],
-                    dtype=np.float32)
+                    [id - i * this_downsample_steps for i in range(this_horizon)])
                 idx_in_obs_horizon = idx_in_obs_horizon[::-1] # reverse order, so ids are increasing
-                idx_in_obs_horizon = np.clip(idx_in_obs_horizon, start_idx, end_idx - 1)
+                idx_in_obs_horizon = np.clip(idx_in_obs_horizon, 0, id)
 
                 output = input_arr[idx_in_obs_horizon].astype(np.float32)
-
-        obs_dict[key] = output
+            obs_dict[key] = output
 
         # action
-        input_arr = self.replay_buffer['action']
+        input_arr = data_episode['action']
         action_horizon = self.key_horizon['action']
         action_down_sample_steps = self.key_down_sample_steps['action']
-        slice_end = min(end_idx, current_idx + (action_horizon - 1) * action_down_sample_steps + 1)
-        output = input_arr[current_idx: slice_end: action_down_sample_steps]
+        slice_end = min(epi_len, id + (action_horizon - 1) * action_down_sample_steps + 1)
+        output = input_arr[id: slice_end: action_down_sample_steps]
         # solve padding
         if not self.action_padding:
             assert output.shape[0] == action_horizon

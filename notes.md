@@ -53,9 +53,13 @@ Uses RealEnv diffusion_policy/real_world/real_env.py
 saved on disk. It is one folder saved from zarr.
 
 ### `Dataset class`
-Initialize: load the zarr dataset, save into a replaybuffer (optionally create a cache)
+__init__: load the zarr dataset, save into a replaybuffer (optionally create a cache)
+sampler: read one entry from dataset. Uses horizon to decide how many timesteps to read
 get_item: read one entry, convert it to a format consistent to the `shape_meta`
+get_normalizer: read all data, exam each key and compute normalizer for it
 
+### Workspace
+Instantiate Dataset. It uses hydra, so the arguments to __init__ come from config (task.dataset)
 
 
 
@@ -89,6 +93,7 @@ python eval_real_robot.py -i data/outputs/blah/checkpoints/latest.ckpt -o data/e
 
 # Hacky notes
 
+## shape_meta is different from data shape
 In umi.yaml, some shape_meta entries has a "raw_shape" entry in addition to "shape". This 
 is because the Dataset class will modify the data entry when loading them. 
 * shape: the shape of data presented by Dataset.
@@ -98,6 +103,28 @@ In fact, shape_meta is mostly used to describe the data after loaded by the data
 It might not corresponds properly to the zarr storage. For example, the shape meta
 "robot0_eef_rot_axis_angle_wrt_start" is completely created in the dataset class, based on
 some entries in zarr that are not listed in shape meta.
+
+## Computing poses "wrt start pose"
+This is to give the policy a concept of where the base is, so as to properly tell concepts
+like "left or right" in the camera view.
+
+A side effect is that there are duplicate information in the shape_meta (two eef_pose),
+which is fine for nn policies.
+
+
+## latency matching in data vs. inference
+You can add latency in data (see shape meta), so the training will consider latency matching.
+The other option is to add latency matching in inference. This has the advantage of flexibility
+for different latencies. Downside is to drop data frames for the faster modality.
+
+Default uses inference latency matching only. The latency in shape_meta is set to zero.
+
+
+## What to update when action is changed
+* xxxtask_dataset.py
+* xxxtask.yaml (shape_meta)
+* train_xxx_workspace.py/log_action_mse
+
 
 
 # Question
