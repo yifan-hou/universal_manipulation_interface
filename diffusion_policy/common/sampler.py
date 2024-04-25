@@ -24,6 +24,7 @@ class SequenceSampler:
         replay_buffer: dict,
         key_horizon: dict, # obs: observation horizon, action: action horizon
         key_down_sample_steps: dict,
+        query_frequency_down_sample_steps: int=1,
         episode_mask: Optional[np.ndarray]=None,
         action_padding: bool=False,
     ):
@@ -50,6 +51,12 @@ class SequenceSampler:
             epi_len.extend([episodes_length[array_index]] * array_length)
             ids.extend(range(array_length))
             # assert(epi_len[-1] >= ids[-1] + (key_horizon['action'] - 1) * key_down_sample_steps['action'] + 1)
+
+        N_indices = len(epi_id)
+        epi_id = epi_id[::query_frequency_down_sample_steps]
+        epi_len = epi_len[::query_frequency_down_sample_steps]
+        ids = ids[::query_frequency_down_sample_steps]
+
         indices = list(zip(epi_id, epi_len, ids))
 
         self.shape_meta = shape_meta

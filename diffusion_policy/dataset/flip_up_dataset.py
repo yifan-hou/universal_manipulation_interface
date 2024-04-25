@@ -30,6 +30,7 @@ class FlipUpDataset(BaseDataset):
     def __init__(self,
         shape_meta: dict,
         dataset_path: str,
+        query_frequency_down_sample_steps: int=1,
         action_padding: bool=False,
         temporally_independent_normalization: bool=False,
         seed: int=42,
@@ -85,6 +86,7 @@ class FlipUpDataset(BaseDataset):
             replay_buffer=replay_buffer,
             key_horizon=key_horizon,
             key_down_sample_steps=key_down_sample_steps,
+            query_frequency_down_sample_steps=query_frequency_down_sample_steps,
             episode_mask=train_mask,
             action_padding=action_padding,
         )
@@ -95,6 +97,7 @@ class FlipUpDataset(BaseDataset):
         self.obs_lowdim_keys = obs_lowdim_keys
         self.key_horizon = key_horizon
         self.key_down_sample_steps = key_down_sample_steps
+        self.query_frequency_down_sample_steps = query_frequency_down_sample_steps
         self.val_mask = val_mask
         self.action_padding = action_padding
         self.sampler = sampler
@@ -143,6 +146,7 @@ class FlipUpDataset(BaseDataset):
             replay_buffer=self.replay_buffer,
             key_horizon=self.key_horizon,
             key_down_sample_steps=self.key_down_sample_steps,
+            query_frequency_down_sample_steps=self.query_frequency_down_sample_steps,
             episode_mask=self.val_mask,
             action_padding=self.action_padding,
         )

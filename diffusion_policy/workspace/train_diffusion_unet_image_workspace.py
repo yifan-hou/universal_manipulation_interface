@@ -313,8 +313,8 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                         batch = dict_apply(train_sampling_batch, lambda x: x.to(device, non_blocking=True))
                         gt_action = batch['action']
                         pred_action = policy.predict_action(batch['obs'], None)['action_pred']
-                        # print("gt_action.shape: ", gt_action.shape)
-                        # print("pred_action.shape: ", pred_action.shape)
+                        print("gt_action.shape: ", gt_action.shape)
+                        print("pred_action.shape: ", pred_action.shape)
                         log_action_mse(step_log, 'train', pred_action, gt_action)
 
                         if len(val_dataloader) > 0:

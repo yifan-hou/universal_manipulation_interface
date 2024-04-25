@@ -6,7 +6,7 @@ obs_down_sample_steps: 10 # 3, 1
 action_down_sample_steps: 10 # 3, 1
 
 low_dim_obs_horizon: 2
-img_obs_horizon: 2
+img_obs_horizon: 1
 action_horizon: 16
 ignore_proprioception: False
 
@@ -15,9 +15,9 @@ shape_meta: &shape_meta
   # acceptable types: rgb, low_dim
   # fields under raw and obs must be consistent with FlipUpDataset.raw_to_obs_action()
   raw: # describes what exists in data
-    camera0_rgb:
-      shape: [3, 224, 224]
-      type: rgb
+    # camera0_rgb:
+    #   shape: [3, 224, 224]
+    #   type: rgb
     camera1_rgb:
       shape: [3, 224, 224]
       type: rgb
@@ -34,12 +34,12 @@ shape_meta: &shape_meta
       shape: [6]
       type: low_dim
   obs:
-    camera0_rgb:
-      shape: [3, 224, 224]
-      horizon: ${task.img_obs_horizon} # int
-      down_sample_steps: ${task.obs_down_sample_steps} # int
-      type: rgb
-      ignore_by_policy: False
+    # camera0_rgb:
+    #   shape: [3, 224, 224]
+    #   horizon: ${task.img_obs_horizon} # int
+    #   down_sample_steps: ${task.obs_down_sample_steps} # int
+    #   type: rgb
+    #   ignore_by_policy: False
     camera1_rgb:
       shape: [3, 224, 224]
       horizon: ${task.img_obs_horizon} # int
@@ -80,7 +80,7 @@ shape_meta: &shape_meta
     rotation_rep: rotation_6d
 
 task_name: &task_name flipup
-dataset_path: /home/yifanhou/data/flip_up_2
+dataset_path: /home/yifanhou/data/flip_up_500
 
 env_runner:
   _target_: diffusion_policy.env_runner.real_pusht_image_runner.RealPushTImageRunner
@@ -89,6 +89,7 @@ dataset:
   _target_: diffusion_policy.dataset.flip_up_dataset.FlipUpDataset
   shape_meta: *shape_meta
   dataset_path: ${task.dataset_path}
+  query_frequency_down_sample_steps: 8
   # cache_dir: null
   action_padding: False
   temporally_independent_normalization: False
