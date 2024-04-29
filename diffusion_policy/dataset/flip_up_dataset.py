@@ -1,28 +1,30 @@
 import copy
 from typing import Dict, Optional
 
-import os
 from datetime import datetime
-import pathlib
 import numpy as np
 import torch
 import zarr
 from threadpoolctl import threadpool_limits
 from tqdm import trange, tqdm
 from filelock import FileLock
-# import shutil
 
 from diffusion_policy.codecs.imagecodecs_numcodecs import register_codecs
 from diffusion_policy.common.normalize_util import (
     array_to_stats, concatenate_normalizer, get_identity_normalizer_from_stat,
     get_image_identity_normalizer, get_range_normalizer_from_stat)
-# from diffusion_policy.common.pose_repr_util import convert_pose_mat_rep
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.common.sampler import SequenceSampler, get_val_mask
 from diffusion_policy.dataset.base_dataset import BaseDataset
 from diffusion_policy.model.common.normalizer import LinearNormalizer
-from umi.common.pose_util import pose7_to_mat, mat_to_pose9d
+
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(sys.path[0], '..')))
+from PyriteConfig.tasks.flip_up.flip_up_type_conversion import (
+    raw_to_obs, raw_to_action, obs_to_obs_sample, action_to_action_sample)
 
 register_codecs()
 
@@ -44,7 +46,7 @@ class FlipUpDataset(BaseDataset):
                 dest_store=zarr.MemoryStore()
             )
         print('[FlipUpDataset] raw to obs/action conversion')
-        replay_buffer = self.raw_to_obs_action(replay_buffer_raw, shape_meta)
+        replay_buffer = self.raw_episodes_conversion(replay_buffer_raw, shape_meta)
 
         print('[FlipUpDataset] reading meta info')
         obs_rgb_keys = list()
@@ -89,6 +91,8 @@ class FlipUpDataset(BaseDataset):
             query_frequency_down_sample_steps=query_frequency_down_sample_steps,
             episode_mask=train_mask,
             action_padding=action_padding,
+            obs_to_obs_sample=obs_to_obs_sample,
+            action_to_action_sample=action_to_action_sample,
         )
 
         self.shape_meta = shape_meta
@@ -104,7 +108,7 @@ class FlipUpDataset(BaseDataset):
         self.temporally_independent_normalization = temporally_independent_normalization
         self.threadpool_limits_is_applied = False
 
-    def raw_to_obs_action(self,
+    def raw_episodes_conversion(self,
         replay_buffer_raw: ReplayBuffer,
         shape_meta: dict
     ):
@@ -115,25 +119,8 @@ class FlipUpDataset(BaseDataset):
             # iterates over episodes
             # ep: 'episode_xx'
             replay_buffer['data'][ep] = dict()
-            # obs.rgb: keep entry, keep as compressed zarr array in memory
-            for key, attr in shape_meta['raw'].items():
-                type = attr.get('type', 'low_dim')
-                if type == 'rgb':
-                    # obs.rgb: keep as compressed zarr array in memory
-                    replay_buffer['data'][ep][key] = replay_buffer_raw['data'][ep][key]
-
-            # obs.low_dim: load entry, convert to obs.low_dim
-            ts_pose_fb = replay_buffer_raw['data'][ep]['ts_pose_fb']
-            ts_pose_fb_9d = mat_to_pose9d(pose7_to_mat(ts_pose_fb))
-
-            replay_buffer['data'][ep]['robot0_eef_pos'] = ts_pose_fb_9d[:, :3]
-            replay_buffer['data'][ep]['robot0_eef_rot_axis_angle'] = ts_pose_fb_9d[:, 3:]
-            replay_buffer['data'][ep]['robot0_eef_wrench'] = replay_buffer_raw['data'][ep]['wrench'][:]
-
-            # action: assemble from low_dim
-            ts_pose_command = replay_buffer_raw['data'][ep]['ts_pose_command']
-            ts_pose_command_9d = mat_to_pose9d(pose7_to_mat(ts_pose_fb))
-            replay_buffer['data'][ep]['action'] = ts_pose_command_9d[:]
+            raw_to_obs(replay_buffer_raw['data'][ep], replay_buffer['data'][ep], shape_meta)
+            raw_to_action(replay_buffer_raw['data'][ep], replay_buffer['data'][ep])
 
         # meta
         replay_buffer['meta'] = replay_buffer_raw['meta']
@@ -149,6 +136,8 @@ class FlipUpDataset(BaseDataset):
             query_frequency_down_sample_steps=self.query_frequency_down_sample_steps,
             episode_mask=self.val_mask,
             action_padding=self.action_padding,
+            obs_to_obs_sample=obs_to_obs_sample,
+            action_to_action_sample=action_to_action_sample,
         )
         val_set.val_mask = ~self.val_mask
         return val_set

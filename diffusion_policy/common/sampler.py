@@ -27,6 +27,8 @@ class SequenceSampler:
         query_frequency_down_sample_steps: int=1,
         episode_mask: Optional[np.ndarray]=None,
         action_padding: bool=False,
+        obs_to_obs_sample=None,
+        action_to_action_sample=None,
     ):
         # Computes indices. indices[i] = (epi_id, epi_len, id)
         #   epi_id: which episode the index i belongs to.
@@ -65,6 +67,8 @@ class SequenceSampler:
         self.indices = indices
         self.key_horizon = key_horizon
         self.key_down_sample_steps = key_down_sample_steps
+        self.obs_to_obs_sample = obs_to_obs_sample
+        self.action_to_action_sample = action_to_action_sample
 
         self.ignore_rgb_is_applied = False # speed up the interation when getting normalizer
 
@@ -79,6 +83,7 @@ class SequenceSampler:
         action_array = []
 
         # observation
+        #   step one: read correct length
         obs_shape_meta = self.shape_meta['obs']
         for key, attr in obs_shape_meta.items():
             input_arr = data_episode[key]
@@ -112,7 +117,11 @@ class SequenceSampler:
                 output = input_arr[idx_in_obs_horizon].astype(np.float32)
             obs_dict[key] = output
 
+        #   step two: convert to relative pose
+        obs_sample = self.obs_to_obs_sample(obs_dict)
+
         # action
+        #   step one: read correct length
         input_arr = data_episode['action']
         action_horizon = self.key_horizon['action']
         action_down_sample_steps = self.key_down_sample_steps['action']
@@ -124,9 +133,10 @@ class SequenceSampler:
         elif output.shape[0] < action_horizon:
             padding = np.repeat(output[-1:], action_horizon - output.shape[0], axis=0)
             output = np.concatenate([output, padding], axis=0)
-        action_array = output
+        #   step two: convert to relative pose
+        action_sample = self.action_to_action_sample(output)
 
-        return obs_dict, action_array
+        return obs_sample, action_sample
 
     def ignore_rgb(self, apply=True):
         self.ignore_rgb_is_applied = apply
