@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Callable
 import numpy as np
 import random
 import scipy.interpolate as si
@@ -27,8 +27,8 @@ class SequenceSampler:
         query_frequency_down_sample_steps: int=1,
         episode_mask: Optional[np.ndarray]=None,
         action_padding: bool=False,
-        obs_to_obs_sample=None,
-        action_to_action_sample=None,
+        obs_to_obs_sample: Optional[Callable]=None,
+        action_to_action_sample: Optional[Callable]=None,
     ):
         # Computes indices. indices[i] = (epi_id, epi_len, id)
         #   epi_id: which episode the index i belongs to.
@@ -54,7 +54,6 @@ class SequenceSampler:
             ids.extend(range(array_length))
             # assert(epi_len[-1] >= ids[-1] + (key_horizon['action'] - 1) * key_down_sample_steps['action'] + 1)
 
-        N_indices = len(epi_id)
         epi_id = epi_id[::query_frequency_down_sample_steps]
         epi_len = epi_len[::query_frequency_down_sample_steps]
         ids = ids[::query_frequency_down_sample_steps]
@@ -80,7 +79,6 @@ class SequenceSampler:
         episode = f'episode_{epi_id}'
         data_episode = self.replay_buffer['data'][episode]
         obs_dict = dict()
-        action_array = []
 
         # observation
         #   step one: read correct length
@@ -104,21 +102,16 @@ class SequenceSampler:
                 if output.shape[0] < this_horizon:
                     padding = np.repeat(output[:1], this_horizon - output.shape[0], axis=0)
                     output = np.concatenate([padding, output], axis=0)
-                # move channel last to channel first
-                # T,H,W,C
-                # convert uint8 image to float32
-                output = np.moveaxis(output, -1, 1).astype(np.float32) / 255.
             elif type == 'low_dim':
                 idx_in_obs_horizon = np.array(
                     [id - i * this_downsample_steps for i in range(this_horizon)])
                 idx_in_obs_horizon = idx_in_obs_horizon[::-1] # reverse order, so ids are increasing
                 idx_in_obs_horizon = np.clip(idx_in_obs_horizon, 0, id)
 
-                output = input_arr[idx_in_obs_horizon].astype(np.float32)
             obs_dict[key] = output
 
         #   step two: convert to relative pose
-        obs_sample = self.obs_to_obs_sample(obs_dict)
+        obs_sample = self.obs_to_obs_sample(obs_dict, self.shape_meta, 'check')
 
         # action
         #   step one: read correct length
