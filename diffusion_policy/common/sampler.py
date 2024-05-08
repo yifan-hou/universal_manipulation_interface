@@ -35,6 +35,7 @@ class SequenceSampler:
         #   epi_len: length of the episode.
         #   id: the index within the episode.
         # here, index i is assumed to be using the low dim index.
+        episode_keys = replay_buffer['data'].keys()
         episodes_length = replay_buffer['meta']['episode_low_dim_len'][:]
         episodes_length_for_query = episodes_length.copy()
         if not action_padding:
@@ -45,13 +46,18 @@ class SequenceSampler:
         epi_id = []
         epi_len = []
         ids = []
-        for array_index, array_length in enumerate(episodes_length_for_query):
-            if episode_mask is not None and not episode_mask[array_index]:
+        episode_count = 0
+        for key in episode_keys:
+            episode_index = int(key.split('_')[-1])
+            array_length = episodes_length_for_query[episode_count]
+            if episode_mask is not None and not episode_mask[episode_count]:
                 # skip episode
                 continue
-            epi_id.extend([array_index] * array_length)
-            epi_len.extend([episodes_length[array_index]] * array_length)
+            epi_id.extend([episode_index] * array_length)
+            epi_len.extend([episodes_length[episode_count]] * array_length)
             ids.extend(range(array_length))
+            episode_count += 1
+
             # assert(epi_len[-1] >= ids[-1] + (key_horizon['action'] - 1) * key_down_sample_steps['action'] + 1)
 
         epi_id = epi_id[::query_frequency_down_sample_steps]
@@ -107,11 +113,12 @@ class SequenceSampler:
                     [id - i * this_downsample_steps for i in range(this_horizon)])
                 idx_in_obs_horizon = idx_in_obs_horizon[::-1] # reverse order, so ids are increasing
                 idx_in_obs_horizon = np.clip(idx_in_obs_horizon, 0, id)
+                output = input_arr[idx_in_obs_horizon].astype(np.float32)
 
             obs_dict[key] = output
 
         #   step two: convert to relative pose
-        obs_sample = self.obs_to_obs_sample(obs_dict, self.shape_meta, 'check')
+        obs_sample = self.obs_to_obs_sample(obs_dict, self.shape_meta, 'check', self.ignore_rgb_is_applied)
 
         # action
         #   step one: read correct length

@@ -1,11 +1,10 @@
 name: flip_up
 
-# camera_obs_latency: 0.125
-# robot_obs_latency: 0.0001
-obs_down_sample_steps: 10 # 3, 1
+rgb_obs_down_sample_steps: 10
+low_dim_obs_down_sample_steps: 1
 action_down_sample_steps: 10 # 3, 1
 
-low_dim_obs_horizon: 2
+low_dim_obs_horizon: 20
 img_obs_horizon: 1
 action_horizon: 16
 ignore_proprioception: False
@@ -37,39 +36,39 @@ shape_meta: &shape_meta
     # camera0_rgb:
     #   shape: [3, 224, 224]
     #   horizon: ${task.img_obs_horizon} # int
-    #   down_sample_steps: ${task.obs_down_sample_steps} # int
+    #   down_sample_steps: ${task.rgb_obs_down_sample_steps} # int
     #   type: rgb
     #   ignore_by_policy: False
     camera1_rgb:
       shape: [3, 224, 224]
       horizon: ${task.img_obs_horizon} # int
-      down_sample_steps: ${task.obs_down_sample_steps} # int
+      down_sample_steps: ${task.rgb_obs_down_sample_steps} # int
       type: rgb
       ignore_by_policy: False
     camera2_rgb:
       shape: [3, 224, 224]
       horizon: ${task.img_obs_horizon} # int
-      down_sample_steps: ${task.obs_down_sample_steps} # int
+      down_sample_steps: ${task.rgb_obs_down_sample_steps} # int
       type: rgb
       ignore_by_policy: False
     robot0_eef_pos:
       shape: [3]
       horizon: ${task.low_dim_obs_horizon} # int
-      down_sample_steps: ${task.obs_down_sample_steps} # float
+      down_sample_steps: ${task.low_dim_obs_down_sample_steps} # float
       type: low_dim
       ignore_by_policy: ${task.ignore_proprioception}
     robot0_eef_rot_axis_angle: # exists in data
       raw_shape: [3]
       shape: [6]
       horizon: ${task.low_dim_obs_horizon} # int
-      down_sample_steps: ${task.obs_down_sample_steps} # float
+      down_sample_steps: ${task.low_dim_obs_down_sample_steps} # float
       type: low_dim
       rotation_rep: rotation_6d
       ignore_by_policy: ${task.ignore_proprioception}
     robot0_eef_wrench:
       shape: [6]
       horizon: ${task.low_dim_obs_horizon} # int
-      down_sample_steps: ${task.obs_down_sample_steps} # float
+      down_sample_steps: ${task.low_dim_obs_down_sample_steps} # float
       type: low_dim
       ignore_by_policy: ${task.ignore_proprioception}
 
@@ -80,9 +79,9 @@ shape_meta: &shape_meta
     rotation_rep: rotation_6d
 
 task_name: &task_name flipup
-dataset_path: /home/yifanhou/data/flip_up_500
+dataset_path: /home/yifanhou/data/flip_up_500_filtered
 
-env_runner:
+env_runner: # used in workspace for computing metrics
   _target_: diffusion_policy.env_runner.real_pusht_image_runner.RealPushTImageRunner
 
 dataset:
