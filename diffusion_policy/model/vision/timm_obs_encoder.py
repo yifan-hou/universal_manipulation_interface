@@ -287,10 +287,12 @@ class TimmObsEncoder(ModuleAttrMixin):
     def output_shape(self):
         example_obs_dict = dict()
         obs_shape_meta = self.shape_meta['obs']
+        sample_obs_shape_meta = self.shape_meta['sample']['obs']['sparse']
         for key, attr in obs_shape_meta.items():
             shape = tuple(attr['shape'])
+            horizon = sample_obs_shape_meta[key]['horizon']
             this_obs = torch.zeros(
-                (1, attr['horizon']) + shape, 
+                (1, horizon) + shape, 
                 dtype=self.dtype,
                 device=self.device)
             example_obs_dict[key] = this_obs

@@ -1,10 +1,11 @@
-if __name__ == "__main__":
-    import sys
-    import os
-    import pathlib
+import sys
+import os
+import pathlib
 
-    ROOT_DIR = str(pathlib.Path(__file__).parent.parent.parent)
-    sys.path.append(ROOT_DIR)
+ROOT_DIR = str(pathlib.Path(__file__).parent.parent.parent)
+sys.path.append(ROOT_DIR)
+
+if __name__ == "__main__":
     os.chdir(ROOT_DIR)
 
 import os
@@ -67,7 +68,8 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 obs_encorder_params.append(param)
         print(f'obs_encorder params: {len(obs_encorder_params)}')
         param_groups = [
-            {'params': self.model.model.parameters()},
+            {'params': self.model.model_sparse.parameters()},
+            {'params': self.model.model_dense.parameters()},
             {'params': obs_encorder_params, 'lr': obs_encorder_lr}
         ]
         # self.optimizer = hydra.utils.instantiate(
@@ -113,14 +115,19 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         train_dataloader = DataLoader(dataset, **cfg.dataloader)
 
         # compute normalizer on the main process and save to disk
-        normalizer_path = os.path.join(self.output_dir, 'normalizer.pkl')
+        sparse_normalizer_path = os.path.join(self.output_dir, 'sparse_normalizer.pkl')
+        dense_normalizer_path = os.path.join(self.output_dir, 'dense_normalizer.pkl')
         if accelerator.is_main_process:
-            normalizer = dataset.get_normalizer()
-            pickle.dump(normalizer, open(normalizer_path, 'wb'))
+            sparse_normalizer, dense_normalizer = dataset.get_normalizer()
+            pickle.dump(sparse_normalizer, open(sparse_normalizer_path, 'wb'))
+            if dense_normalizer is not None:
+                pickle.dump(dense_normalizer, open(dense_normalizer_path, 'wb'))
 
         # load normalizer on all processes
         accelerator.wait_for_everyone()
-        normalizer = pickle.load(open(normalizer_path, 'rb'))
+        sparse_normalizer = pickle.load(open(sparse_normalizer_path, 'rb'))
+        if dense_normalizer is not None:
+            dense_normalizer = pickle.load(open(dense_normalizer_path, 'rb'))
 
         # configure validation dataset
         val_dataset = dataset.get_validation_dataset()
@@ -128,9 +135,9 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         print('train dataset:', len(dataset), 'train dataloader:', len(train_dataloader))
         print('val dataset:', len(val_dataset), 'val dataloader:', len(val_dataloader))
 
-        self.model.set_normalizer(normalizer)
+        self.model.set_normalizer(sparse_normalizer, dense_normalizer)
         if cfg.training.use_ema:
-            self.ema_model.set_normalizer(normalizer)
+            self.ema_model.set_normalizer(sparse_normalizer, dense_normalizer)
 
         # configure lr scheduler
         lr_scheduler = get_scheduler(
@@ -299,29 +306,39 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 #             step_log['val_loss'] = val_loss
                 
                 def log_action_mse(step_log, category, pred_action, gt_action):
-                    B, T, _ = pred_action.shape
-                    pred_action = pred_action.view(B, T, -1, 9)
-                    gt_action = gt_action.view(B, T, -1, 9)
-                    step_log[f'{category}_action_mse_error'] = torch.nn.functional.mse_loss(pred_action, gt_action)
-                    step_log[f'{category}_action_mse_error_pos'] = torch.nn.functional.mse_loss(pred_action[..., :3], gt_action[..., :3])
-                    step_log[f'{category}_action_mse_error_rot'] = torch.nn.functional.mse_loss(pred_action[..., 3:9], gt_action[..., 3:9])
-                    # step_log[f'{category}_action_mse_error_width'] = torch.nn.functional.mse_loss(pred_action[..., 9], gt_action[..., 9])
+                    B, T, _ = pred_action['sparse'].shape
+                    pred_action_sparse = pred_action['sparse'].view(B, T, -1, 9)
+                    gt_action_sparse = gt_action['sparse'].view(B, T, -1, 9)
+                    step_log[f'{category}_sparse_action_mse_error'] = torch.nn.functional.mse_loss(pred_action_sparse, gt_action_sparse)
+                    step_log[f'{category}_sparse_action_mse_error_pos'] = torch.nn.functional.mse_loss(pred_action_sparse[..., :3], gt_action_sparse[..., :3])
+                    step_log[f'{category}_sparse_action_mse_error_rot'] = torch.nn.functional.mse_loss(pred_action_sparse[..., 3:9], gt_action_sparse[..., 3:9])
+                    # step_log[f'{category}_sparse_action_mse_error_width'] = torch.nn.functional.mse_loss(pred_action_sparse[..., 9], gt_action_sparse[..., 9])
+                    B, T, _, _= pred_action['dense'].shape
+                    pred_action_dense = pred_action['dense'].view(B, T, -1, 9)
+                    gt_action_dense = gt_action['dense'].view(B, T, -1, 9)
+                    step_log[f'{category}_dense_action_mse_error'] = torch.nn.functional.mse_loss(pred_action_dense, gt_action_dense)
+                    step_log[f'{category}_dense_action_mse_error_pos'] = torch.nn.functional.mse_loss(pred_action_dense[..., :3], gt_action_dense[..., :3])
+                    step_log[f'{category}_dense_action_mse_error_rot'] = torch.nn.functional.mse_loss(pred_action_dense[..., 3:9], gt_action_dense[..., 3:9])
+                    # step_log[f'{category}_dense_action_mse_error_width'] = torch.nn.functional.mse_loss(pred_action_dense[..., 9], gt_action_dense[..., 9])
+  
                 # run diffusion sampling on a training batch
                 if (self.epoch % cfg.training.sample_every) == 0 and accelerator.is_main_process:
                     with torch.no_grad():
                         # sample trajectory from training set, and evaluate difference
                         batch = dict_apply(train_sampling_batch, lambda x: x.to(device, non_blocking=True))
                         gt_action = batch['action']
-                        pred_action = policy.predict_action(batch['obs'], None)['action_pred']
-                        print("gt_action.shape: ", gt_action.shape)
-                        print("pred_action.shape: ", pred_action.shape)
+                        pred_action = policy.predict_action(batch['obs'])
+                        print("gt_action['sparse'].shape: ", gt_action['sparse'].shape)
+                        print("pred_action['sparse'].shape: ", pred_action['sparse'].shape)
+                        print("gt_action['dense'].shape: ", gt_action['dense'].shape)
+                        print("pred_action['dense'].shape: ", pred_action['dense'].shape)
                         log_action_mse(step_log, 'train', pred_action, gt_action)
 
                         if len(val_dataloader) > 0:
                             val_sampling_batch = next(iter(val_dataloader))
                             batch = dict_apply(val_sampling_batch, lambda x: x.to(device, non_blocking=True))
                             gt_action = batch['action']
-                            pred_action = policy.predict_action(batch['obs'], None)['action_pred']
+                            pred_action = policy.predict_action(batch['obs'])
                             log_action_mse(step_log, 'val', pred_action, gt_action)
 
                         del batch

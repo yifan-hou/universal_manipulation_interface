@@ -1,13 +1,19 @@
+import sys
+import os
+
+SCRIPT_PATH = os.path.abspath(os.path.dirname(__file__))
+sys.path.append(os.path.join(SCRIPT_PATH, '../../../'))
+
 import copy
 from typing import Dict, Optional
 
-from datetime import datetime
 import numpy as np
 import torch
 import zarr
 from threadpoolctl import threadpool_limits
 from tqdm import trange, tqdm
 from filelock import FileLock
+from einops import rearrange, reduce
 
 from diffusion_policy.codecs.imagecodecs_numcodecs import register_codecs
 from diffusion_policy.common.normalize_util import (
@@ -22,7 +28,6 @@ from diffusion_policy.model.common.normalizer import LinearNormalizer
 import sys
 import os
 
-sys.path.append(os.path.abspath(os.path.join(sys.path[0], '..')))
 from PyriteConfig.tasks.flip_up.flip_up_type_conversion import (
     raw_to_obs, raw_to_action, obs_to_obs_sample, action_to_action_sample)
 
@@ -32,7 +37,8 @@ class FlipUpDataset(BaseDataset):
     def __init__(self,
         shape_meta: dict,
         dataset_path: str,
-        query_frequency_down_sample_steps: int=1,
+        sparse_query_frequency_down_sample_steps: int=1,
+        dense_query_frequency_down_sample_steps: int=1,
         action_padding: bool=False,
         temporally_independent_normalization: bool=False,
         seed: int=42,
@@ -45,36 +51,11 @@ class FlipUpDataset(BaseDataset):
                 src_store=directory_store,
                 dest_store=zarr.MemoryStore()
             )
+        # convert raw to replay buffer
         print('[FlipUpDataset] raw to obs/action conversion')
         replay_buffer = self.raw_episodes_conversion(replay_buffer_raw, shape_meta)
 
-        print('[FlipUpDataset] reading meta info')
-        obs_rgb_keys = list()
-        obs_lowdim_keys = list()
-        key_horizon = dict()
-        key_down_sample_steps = dict()
-        obs_shape_meta = shape_meta['obs']
-        for key, attr in obs_shape_meta.items():
-            # obtain obs type
-            type = attr.get('type', 'low_dim')
-            if type == 'rgb':
-                obs_rgb_keys.append(key)
-            elif type == 'low_dim':
-                obs_lowdim_keys.append(key)
-
-            # obtain obs_horizon info
-            horizon = shape_meta['obs'][key]['horizon']
-            key_horizon[key] = horizon
-
-            # obtain down_sample_steps info
-            down_sample_steps = shape_meta['obs'][key]['down_sample_steps']
-            key_down_sample_steps[key] = down_sample_steps
-
-        # obtain action info
-        key_horizon['action'] = shape_meta['action']['horizon']
-        key_down_sample_steps['action'] = shape_meta['action']['down_sample_steps']
-
-        # train/val mask for training
+        # train/val mask for training 
         val_mask = get_val_mask(
             n_episodes=replay_buffer_raw.n_episodes,
             val_ratio=val_ratio,
@@ -86,9 +67,8 @@ class FlipUpDataset(BaseDataset):
         sampler = SequenceSampler(
             shape_meta=shape_meta,
             replay_buffer=replay_buffer,
-            key_horizon=key_horizon,
-            key_down_sample_steps=key_down_sample_steps,
-            query_frequency_down_sample_steps=query_frequency_down_sample_steps,
+            sparse_query_frequency_down_sample_steps=sparse_query_frequency_down_sample_steps,
+            dense_query_frequency_down_sample_steps=dense_query_frequency_down_sample_steps,
             episode_mask=train_mask,
             action_padding=action_padding,
             obs_to_obs_sample=obs_to_obs_sample,
@@ -97,11 +77,8 @@ class FlipUpDataset(BaseDataset):
 
         self.shape_meta = shape_meta
         self.replay_buffer = replay_buffer
-        self.obs_rgb_keys = obs_rgb_keys
-        self.obs_lowdim_keys = obs_lowdim_keys
-        self.key_horizon = key_horizon
-        self.key_down_sample_steps = key_down_sample_steps
-        self.query_frequency_down_sample_steps = query_frequency_down_sample_steps
+        self.sparse_query_frequency_down_sample_steps = sparse_query_frequency_down_sample_steps
+        self.dense_query_frequency_down_sample_steps = dense_query_frequency_down_sample_steps
         self.val_mask = val_mask
         self.action_padding = action_padding
         self.sampler = sampler
@@ -131,9 +108,8 @@ class FlipUpDataset(BaseDataset):
         val_set.sampler = SequenceSampler(
             shape_meta=self.shape_meta,
             replay_buffer=self.replay_buffer,
-            key_horizon=self.key_horizon,
-            key_down_sample_steps=self.key_down_sample_steps,
-            query_frequency_down_sample_steps=self.query_frequency_down_sample_steps,
+            sparse_query_frequency_down_sample_steps=self.sparse_query_frequency_down_sample_steps,
+            dense_query_frequency_down_sample_steps=self.dense_query_frequency_down_sample_steps,
             episode_mask=self.val_mask,
             action_padding=self.action_padding,
             obs_to_obs_sample=obs_to_obs_sample,
@@ -142,48 +118,94 @@ class FlipUpDataset(BaseDataset):
         val_set.val_mask = ~self.val_mask
         return val_set
 
-    ##
-    ## Read all action data, compute normalizer parameters from them, return the
-    ## initialized normalizers.
-    ##
-    def get_normalizer(self, **kwargs) -> LinearNormalizer:
-        normalizer = LinearNormalizer()
+    def get_normalizer(self, **kwargs) -> tuple:
+        """ Compute normalizer for each key in the dataset.
+            Note: only low_dim and action are considered. Image does not need normalization.
+            return: tuple of normalizers for sparse and dense obs. Dense one might be None.
+        """
+        sparse_normalizer = LinearNormalizer()
+        dense_normalizer = LinearNormalizer()
 
-        # enumerate the dataset and save low_dim data
-        data_cache = {key: list() for key in self.obs_lowdim_keys + ['action']}
+        no_dense_key = False
+        if len(self.shape_meta['sample']['obs'].keys()) == 1:
+            # there is no dense key
+            no_dense_key = True
+
+        # gather all data in cache
         self.sampler.ignore_rgb(True)
         dataloader = torch.utils.data.DataLoader(
             dataset=self,
             batch_size=64,
             num_workers=32,
         )
+        data_cache_sparse = {}
+        data_cache_dense = {}
         for batch in tqdm(dataloader, desc='iterating dataset to get normalization'):
-            for key in self.obs_lowdim_keys:
-                data_cache[key].append(copy.deepcopy(batch['obs'][key]))
-            data_cache['action'].append(copy.deepcopy(batch['action']))
+            # sparse obs
+            for key in self.shape_meta['sample']['obs']['sparse'].keys():
+                if self.shape_meta['obs'][key]['type'] == 'low_dim':
+                    if key not in data_cache_sparse.keys():
+                        data_cache_sparse[key] = []
+                    data_cache_sparse[key].append(copy.deepcopy(batch['obs']['sparse'][key]))
+            if 'action' not in data_cache_sparse.keys():
+                data_cache_sparse['action'] = []
+            data_cache_sparse['action'].append(copy.deepcopy(batch['action']['sparse']))
+            # dense obs
+            if no_dense_key:
+                continue
+            for key in self.shape_meta['sample']['obs']['dense'].keys():
+                if self.shape_meta['obs'][key]['type'] == 'low_dim':
+                    if key not in data_cache_dense.keys():
+                        data_cache_dense[key] = []
+                    data_cache_dense[key].append(copy.deepcopy(batch['obs']['dense'][key]))
+            if 'action' not in data_cache_dense.keys():
+                data_cache_dense['action'] = []
+            data_cache_dense['action'].append(copy.deepcopy(batch['action']['dense']))
         self.sampler.ignore_rgb(False)
 
-        for key in data_cache.keys():
-            data_cache[key] = np.concatenate(data_cache[key])
-            assert data_cache[key].shape[0] == len(self.sampler)
-            assert len(data_cache[key].shape) == 3
-            B, T, D = data_cache[key].shape
-            if not self.temporally_independent_normalization:
-                data_cache[key] = data_cache[key].reshape(B*T, D)
+        for data_cache in [data_cache_sparse, data_cache_dense]:
+            for key in data_cache.keys():
+                data_cache[key] = np.concatenate(data_cache[key])
+                if not self.temporally_independent_normalization:
+                    data_cache[key] = rearrange(data_cache[key], 'B T ... -> (B T) (...)')
 
-        # action
-        # One key [pos, rot]
-        # needs to change for multiple robots. See umi_dataset.py
-        action_normalizers = list()
-        action_normalizers.append(get_range_normalizer_from_stat(array_to_stats(data_cache['action'][..., 0:3])))   # pos
-        action_normalizers.append(get_identity_normalizer_from_stat(array_to_stats(data_cache['action'][..., 3:]))) # rot
-        # action_normalizers.append(get_range_normalizer_from_stat(array_to_stats(data_cache['action'][..., (i + 1) * dim_a - 1: (i + 1) * dim_a])))  # gripper
+        # sparse: compute normalizer for action
+        sparse_action_normalizers = list()
+        sparse_action_normalizers.append(get_range_normalizer_from_stat(array_to_stats(data_cache_sparse['action'][..., 0:3])))   # pos
+        sparse_action_normalizers.append(get_identity_normalizer_from_stat(array_to_stats(data_cache_sparse['action'][..., 3:]))) # rot
+        sparse_normalizer['action'] = concatenate_normalizer(sparse_action_normalizers)
 
-        normalizer['action'] = concatenate_normalizer(action_normalizers)
+        # sparse: compute normalizer for obs
+        for key in self.shape_meta['sample']['obs']['sparse'].keys():
+            type = self.shape_meta['obs'][key]['type']
+            if type == 'low_dim':
+                stat = array_to_stats(data_cache_sparse[key])
+                if 'eef_pos' in key:
+                    this_normalizer = get_range_normalizer_from_stat(stat)
+                elif 'rot_axis_angle' in key:
+                    this_normalizer = get_identity_normalizer_from_stat(stat)
+                elif 'wrench' in key:
+                    this_normalizer = get_range_normalizer_from_stat(stat)
+                else:
+                    raise RuntimeError('unsupported')
+                sparse_normalizer[key] = this_normalizer
+            elif type == 'rgb':
+                sparse_normalizer[key] = get_image_identity_normalizer()
+            else:
+                raise RuntimeError('unsupported')
 
-        # obs
-        for key in self.obs_lowdim_keys:
-            stat = array_to_stats(data_cache[key])
+        if no_dense_key:
+            return sparse_normalizer, None
+
+        # dense: compute normalizer for action
+        dense_action_normalizers = list()
+        dense_action_normalizers.append(get_range_normalizer_from_stat(array_to_stats(data_cache_dense['action'][..., 0:3])))   # pos
+        dense_action_normalizers.append(get_identity_normalizer_from_stat(array_to_stats(data_cache_dense['action'][..., 3:]))) # rot
+        dense_normalizer['action'] = concatenate_normalizer(dense_action_normalizers)
+
+        # dense: compute normalizer for obs
+        for key in self.shape_meta['sample']['obs']['dense'].keys():
+            stat = array_to_stats(data_cache_dense[key])
             if 'eef_pos' in key:
                 this_normalizer = get_range_normalizer_from_stat(stat)
             elif 'rot_axis_angle' in key:
@@ -192,12 +214,9 @@ class FlipUpDataset(BaseDataset):
                 this_normalizer = get_range_normalizer_from_stat(stat)
             else:
                 raise RuntimeError('unsupported')
-            normalizer[key] = this_normalizer
+            dense_normalizer[key] = this_normalizer
 
-        # image
-        for key in self.obs_rgb_keys:
-            normalizer[key] = get_image_identity_normalizer()
-        return normalizer
+        return sparse_normalizer, dense_normalizer
 
     def __len__(self):
         return len(self.sampler)
@@ -210,6 +229,6 @@ class FlipUpDataset(BaseDataset):
 
         torch_data = {
             'obs': dict_apply(obs_dict, torch.from_numpy),
-            'action': torch.from_numpy(action_array.astype(np.float32))
+            'action': dict_apply(action_array, torch.from_numpy)
         }
         return torch_data

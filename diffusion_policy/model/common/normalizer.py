@@ -10,6 +10,18 @@ from diffusion_policy.model.common.dict_of_tensor_mixin import DictOfTensorMixin
 
 
 class LinearNormalizer(DictOfTensorMixin):
+    """
+        Linear normalizer for a dictionary of tensors.
+        The normalizer is a dictionary of SingleFieldLinearNormalizer.
+
+        Usage:
+        ```
+        # data is a dictionary of tensors. Then you can call normalize to apply normalizers that match the keys.
+        ndata = normalizer.normalize(data)
+        # action is a tensor. Then you can use the specific normalizer for it.
+        naction = normalizer['action'].normalize(action)
+        '''
+    """
     avaliable_modes = ['limits', 'gaussian']
     
     @torch.no_grad()

@@ -47,6 +47,115 @@ Press "C" to start evaluation (handing control over to the policy). Press "S" to
 Uses RealEnv diffusion_policy/real_world/real_env.py
 
 
+# data format
+1. zarr data
+Exists: on file system
+
+Keys:
+```
+    data/
+        episodes/
+            raw_keys
+            low_dim_time_stamps
+            visual_time_stamps
+
+    meta/
+        episode_low_dim_len
+        episode_rgb_len
+```
+Used by: replay_buffer.py
+
+2. replay_buffer_raw (raw)
+Exists: in task_dataset.py as a temporary variable
+Obtained by loading data with replay_buffer class
+
+Keys follow zarr data above
+
+3. replay_buffer (obs)
+convert to obs keys, create 'action', 'action_time_stamps'
+Exists: in task_dataset.py as a member variable.
+Obtained by self.raw_episodes_conversion()
+Require task specific conversion in task_dataset.py and task_type_conversion.py
+
+size: no subsampling or padding, full length data
+
+keys:
+```
+    data/
+        episodes/
+            obs/
+                obs_keys
+                low_dim_time_stamps
+                visual_time_stamps
+            action
+            action_time_stamps
+    meta/
+        episode_low_dim_len
+        episode_rgb_len
+```
+
+
+4. sample
+Exists: when sampling_sequence is called. Created by sampler.py
+involves sample specific computation (e.g. convert to local frame) to a window of data.
+dense key does not have rgb.
+
+Used in training. Implemented in sampler, dataset/get_normalizer.
+Each entry has a separate normalizer, even when there are duplicates (e.g. when there are same keys in sparse/dense portion)
+``` yaml
+# rgb vs. low_dim: raw data are either rgb images or low_dim vectors. frames are aligned within each type.
+# obs vs. action: obs data are used as policy input; action are used as labels for policy output.
+# dense vs. sparse: used for dense prediction vs. sparse prediction. The concept of dense/sparse is only used in samples, not in stored data.
+
+# down_sample_steps: how many steps to skip in the raw data for the given usage
+# horizon: how many steps to look ahead(action) or back(obs) after downsample for the given usage
+sparse_obs_rgb_down_sample_steps: 10
+sparse_obs_rgb_horizon: 1
+
+sparse_obs_low_dim_down_sample_steps: 1
+sparse_obs_low_dim_horizon: 2
+
+sparse_action_down_sample_steps: 10
+sparse_action_horizon: 16
+
+# optional
+dense_obs_down_sample_steps: 1
+dense_obs_low_dim_horizon: 2
+
+dense_action_down_sample_steps: 1
+dense_action_horizon: 3
+```
+
+```
+sample:
+    obs:
+      sparse:
+        camera1_rgb:
+          horizon: ${task.img_obs_horizon} # int
+          down_sample_steps: ${task.sparse_obs_down_sample_steps} # int
+        robot0_eef_pos:
+          horizon: ${task.low_dim_obs_horizon} # int
+          down_sample_steps: ${task.sparse_obs_down_sample_steps} # float
+      dense:
+        robot0_eef_pos:
+          horizon: ${task.low_dim_obs_horizon} # int
+          down_sample_steps: ${task.dense_obs_down_sample_steps} # float
+    action:
+      sparse:
+        horizon: ${task.sparse_action_horizon}
+        down_sample_steps: ${task.sparse_action_down_sample_steps} # int
+      dense:
+        horizon: ${task.dense_action_horizon}
+        down_sample_steps: ${task.dense_action_down_sample_steps} # int
+```
+'dense' is optional.
+
+# normalizer
+``` py
+normalizer['sparse_action']
+normalizer['dense_action'] # optional
+
+```
 
 # data flow for training
 ### `data`
@@ -57,6 +166,7 @@ __init__: load the zarr dataset, save into a replaybuffer (optionally create a c
 sampler: read one entry from dataset. Uses horizon to decide how many timesteps to read
 get_item: read one entry, convert it to a format consistent to the `shape_meta`
 get_normalizer: read all data, exam each key and compute normalizer for it
+    * requirements on shape_meta: normalizer works on a dict. Each value of the dict must be array, not another dict. All keys must be different.
 
 ### Workspace
 Instantiate Dataset. It uses hydra, so the arguments to __init__ come from config (task.dataset)

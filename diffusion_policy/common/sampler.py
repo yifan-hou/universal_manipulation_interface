@@ -19,35 +19,60 @@ def get_val_mask(n_episodes, val_ratio, seed=0):
 
 
 class SequenceSampler:
+    """ Sample sequences of observations and actions from replay buffer.
+        Query ID is based on rgb data, which is likely to be the most sparse data.
+        Other data corresponding to the query ID is obtain based on timestamps.
+        1. Given query id, find the corresponding low dim/rgb id.
+        1. Construct sparse sample:
+            Sample sparse obs horizon before idx,
+            Sample sparse action horizon after idx.
+        2. Construct dense sample:
+            Find the indices of dense query points. For each dense query point:
+                Sample dense obs horizon before idx,
+                Sample dense action horizon after idx.
+    """
     def __init__(self,
         shape_meta:dict,
         replay_buffer: dict,
-        key_horizon: dict, # obs: observation horizon, action: action horizon
-        key_down_sample_steps: dict,
-        query_frequency_down_sample_steps: int=1,
+        sparse_query_frequency_down_sample_steps: int=1,
+        dense_query_frequency_down_sample_steps: int=1,
         episode_mask: Optional[np.ndarray]=None,
         action_padding: bool=False,
         obs_to_obs_sample: Optional[Callable]=None,
         action_to_action_sample: Optional[Callable]=None,
     ):
-        # Computes indices. indices[i] = (epi_id, epi_len, id)
-        #   epi_id: which episode the index i belongs to.
-        #   epi_len: length of the episode.
-        #   id: the index within the episode.
-        # here, index i is assumed to be using the low dim index.
         episode_keys = replay_buffer['data'].keys()
-        episodes_length = replay_buffer['meta']['episode_low_dim_len'][:]
+        # Step one: Find the usable length of each episode
+        episodes_length = replay_buffer['meta']['episode_rgb_len'][:]
         episodes_length_for_query = episodes_length.copy()
         if not action_padding:
             # if no action padding, truncate the indices to query so the last query point
             #  still has access to the whole horizon of actions
-            episodes_length_for_query -= (key_horizon['action'] - 1) * key_down_sample_steps['action']
+            #  This is enforced by sparse action alone. It is assumed that the dense action is
+            #  not affected.
+            sparse_action_horizon = shape_meta['sample']['action']['sparse']['horizon']
+            sparse_action_down_sample_steps = shape_meta['sample']['action']['sparse']['down_sample_steps']
+            action_chopped_len = (sparse_action_horizon - 1) * sparse_action_down_sample_steps
+            episode_count = -1
+            for episode in episode_keys:
+                episode_count += 1
+                low_dim_end_time = replay_buffer['data'][episode]['action_time_stamps'][-action_chopped_len-1]
+                rgb_times = replay_buffer['data'][episode]['obs']['visual_time_stamps']
+                # find the last rgb_times index that is before low_dim_end_time
+                last_rgb_idx = np.searchsorted(rgb_times, low_dim_end_time, side='right') - 1
+                episodes_length_for_query[episode_count] = last_rgb_idx
         assert(np.min(episodes_length) > 0)
+
+        # Step two: Computes indices from episodes_length_for_query. indices[i] = (epi_id, epi_len, id)
+        #   epi_id: which episode the index i belongs to.
+        #   epi_len: length of the episode.
+        #   id: the index within the episode.
         epi_id = []
         epi_len = []
         ids = []
-        episode_count = 0
+        episode_count = -1
         for key in episode_keys:
+            episode_count += 1
             episode_index = int(key.split('_')[-1])
             array_length = episodes_length_for_query[episode_count]
             if episode_mask is not None and not episode_mask[episode_count]:
@@ -56,13 +81,11 @@ class SequenceSampler:
             epi_id.extend([episode_index] * array_length)
             epi_len.extend([episodes_length[episode_count]] * array_length)
             ids.extend(range(array_length))
-            episode_count += 1
 
-            # assert(epi_len[-1] >= ids[-1] + (key_horizon['action'] - 1) * key_down_sample_steps['action'] + 1)
-
-        epi_id = epi_id[::query_frequency_down_sample_steps]
-        epi_len = epi_len[::query_frequency_down_sample_steps]
-        ids = ids[::query_frequency_down_sample_steps]
+        # Step three: Down sample the query indices to make the dataset smaller
+        epi_id = epi_id[::sparse_query_frequency_down_sample_steps]
+        epi_len = epi_len[::sparse_query_frequency_down_sample_steps]
+        ids = ids[::sparse_query_frequency_down_sample_steps]
 
         indices = list(zip(epi_id, epi_len, ids))
 
@@ -70,10 +93,9 @@ class SequenceSampler:
         self.replay_buffer = replay_buffer
         self.action_padding = action_padding
         self.indices = indices
-        self.key_horizon = key_horizon
-        self.key_down_sample_steps = key_down_sample_steps
         self.obs_to_obs_sample = obs_to_obs_sample
         self.action_to_action_sample = action_to_action_sample
+        self.dense_query_frequency_down_sample_steps = dense_query_frequency_down_sample_steps
 
         self.ignore_rgb_is_applied = False # speed up the interation when getting normalizer
 
@@ -81,62 +103,99 @@ class SequenceSampler:
         return len(self.indices)
 
     def sample_sequence(self, idx):
-        epi_id, epi_len, id = self.indices[idx]
+        """ Sample a sequence of observations and actions at idx.
+
+        """
+        epi_id, epi_len_rgb, rgb_id = self.indices[idx]
         episode = f'episode_{epi_id}'
         data_episode = self.replay_buffer['data'][episode]
-        obs_dict = dict()
 
-        # observation
-        #   step one: read correct length
-        obs_shape_meta = self.shape_meta['obs']
-        for key, attr in obs_shape_meta.items():
-            input_arr = data_episode[key]
-            this_horizon = self.key_horizon[key]
-            this_downsample_steps = self.key_down_sample_steps[key]
+        has_dense = True if 'dense' in self.shape_meta['sample']['obs'].keys() else False
 
-            type = attr.get('type', 'low_dim')
+        # indices are for the rgb obs data. To get low dim obs and action, we need to find their id
+        rgb_time = data_episode['obs']['visual_time_stamps'][rgb_id]
+        low_dim_id = np.searchsorted(data_episode['obs']['low_dim_time_stamps'], rgb_time)
+        action_id = np.searchsorted(data_episode['action_time_stamps'], rgb_time)
+
+        # sparse obs
+        sparse_obs_unprocessed = dict()
+        for key, attr in self.shape_meta['sample']['obs']['sparse'].items():
+            input_arr = data_episode['obs'][key]
+            this_horizon = attr['horizon']
+            this_downsample_steps = attr['down_sample_steps']
+            type = self.shape_meta['obs'][key]['type']
+
+            if type == 'rgb':
+                id = rgb_id
+            elif type == 'low_dim':
+                id = low_dim_id
+
+            num_valid = min(this_horizon, id // this_downsample_steps + 1)
+            slice_start = id - (num_valid - 1) * this_downsample_steps
+            assert(slice_start >= 0)
+            
             if type == 'rgb':
                 if self.ignore_rgb_is_applied:
                     continue
-                num_valid = min(this_horizon, id // this_downsample_steps + 1)
-                slice_start = id - (num_valid - 1) * this_downsample_steps
-                assert(slice_start >= 0)
                 output = input_arr[slice_start: id + 1: this_downsample_steps]
-                assert output.shape[0] == num_valid
-
-                # solve padding
-                if output.shape[0] < this_horizon:
-                    padding = np.repeat(output[:1], this_horizon - output.shape[0], axis=0)
-                    output = np.concatenate([padding, output], axis=0)
             elif type == 'low_dim':
-                idx_in_obs_horizon = np.array(
-                    [id - i * this_downsample_steps for i in range(this_horizon)])
-                idx_in_obs_horizon = idx_in_obs_horizon[::-1] # reverse order, so ids are increasing
-                idx_in_obs_horizon = np.clip(idx_in_obs_horizon, 0, id)
-                output = input_arr[idx_in_obs_horizon].astype(np.float32)
-
-            obs_dict[key] = output
-
-        #   step two: convert to relative pose
-        obs_sample = self.obs_to_obs_sample(obs_dict, self.shape_meta, 'check', self.ignore_rgb_is_applied)
-
-        # action
-        #   step one: read correct length
+                output = input_arr[slice_start: id + 1: this_downsample_steps].astype(np.float32)
+            assert output.shape[0] == num_valid
+            # solve padding
+            if output.shape[0] < this_horizon:
+                padding = np.repeat(output[:1], this_horizon - output.shape[0], axis=0)
+                output = np.concatenate([padding, output], axis=0)
+            sparse_obs_unprocessed[key] = output
+        
+        # sparse action
         input_arr = data_episode['action']
-        action_horizon = self.key_horizon['action']
-        action_down_sample_steps = self.key_down_sample_steps['action']
-        slice_end = min(epi_len, id + (action_horizon - 1) * action_down_sample_steps + 1)
-        output = input_arr[id: slice_end: action_down_sample_steps]
+        action_horizon = self.shape_meta['sample']['action']['sparse']['horizon']
+        action_down_sample_steps = self.shape_meta['sample']['action']['sparse']['down_sample_steps']
+        slice_end = min(len(input_arr)-1, action_id + (action_horizon - 1) * action_down_sample_steps + 1)
+        sparse_action_unprocessed = input_arr[action_id: slice_end: action_down_sample_steps]
         # solve padding
         if not self.action_padding:
-            assert output.shape[0] == action_horizon
-        elif output.shape[0] < action_horizon:
-            padding = np.repeat(output[-1:], action_horizon - output.shape[0], axis=0)
-            output = np.concatenate([output, padding], axis=0)
-        #   step two: convert to relative pose
-        action_sample = self.action_to_action_sample(output)
+            assert sparse_action_unprocessed.shape[0] == action_horizon
+        elif sparse_action_unprocessed.shape[0] < action_horizon:
+            padding = np.repeat(sparse_action_unprocessed[-1:], action_horizon - sparse_action_unprocessed.shape[0], axis=0)
+            sparse_action_unprocessed = np.concatenate([sparse_action_unprocessed, padding], axis=0)
+
+        dense_obs_unprocessed = {}
+        dense_action_unprocessed = []
+        if has_dense:
+            sparse_action_horizon = self.shape_meta['sample']['action']['sparse']['horizon']
+            sparse_action_down_sample_steps = self.shape_meta['sample']['action']['sparse']['down_sample_steps']
+
+            a_dense_obs_key = next(iter(self.shape_meta['sample']['obs']['dense'].values()))
+            dense_obs_horizon = a_dense_obs_key['horizon']
+            dense_obs_down_sample_steps = a_dense_obs_key['down_sample_steps']
+            dense_action_horizon = self.shape_meta['sample']['action']['dense']['horizon']
+            dense_action_down_sample_steps = self.shape_meta['sample']['action']['dense']['down_sample_steps']
+            
+            dense_action_num_of_queries = sparse_action_horizon * sparse_action_down_sample_steps \
+                - dense_action_horizon * dense_action_down_sample_steps
+            dense_queries = np.arange(0, dense_action_num_of_queries, self.dense_query_frequency_down_sample_steps)
+
+            dense_queries_obs_start = dense_queries - (dense_obs_horizon-1) * dense_obs_down_sample_steps
+            dense_queries_action_end = dense_queries + (dense_action_horizon-1) * dense_action_down_sample_steps
+
+            # dense obs (H, T, D)
+            # assuming no padding is needed
+            for key in self.shape_meta['sample']['obs']['dense'].keys():
+                input_arr = data_episode['obs'][key]
+                output = input_arr[[np.arange(dense_queries_obs_start[i], dense_queries[i]+1, dense_obs_down_sample_steps) for i in range(len(dense_queries))]]
+                dense_obs_unprocessed[key] = output.astype(np.float32)
+
+            # dense action (H, T, D)
+            # assuming no padding is needed
+            dense_action_unprocessed = data_episode['action'][[np.arange(dense_queries[i], dense_queries_action_end[i]+1, dense_action_down_sample_steps) for i in range(len(dense_queries))]]
+
+        #   convert to relative pose
+        obs_sample = self.obs_to_obs_sample(sparse_obs_unprocessed, dense_obs_unprocessed, self.shape_meta, 'check', self.ignore_rgb_is_applied)
+        action_sample = self.action_to_action_sample(sparse_action_unprocessed, dense_action_unprocessed)
 
         return obs_sample, action_sample
+
 
     def ignore_rgb(self, apply=True):
         self.ignore_rgb_is_applied = apply

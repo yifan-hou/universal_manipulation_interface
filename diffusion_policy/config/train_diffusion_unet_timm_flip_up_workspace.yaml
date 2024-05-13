@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: flip_up
+  - task: flip_up_mod1.yaml
 
 name: train_diffusion_unet_timm
 _target_: diffusion_policy.workspace.train_diffusion_unet_image_workspace.TrainDiffusionUnetImageWorkspace
@@ -12,7 +12,7 @@ exp_name: "default"
 n_action_steps: 8
 
 policy:
-  _target_: diffusion_policy.policy.diffusion_unet_timm_policy.DiffusionUnetTimmPolicy
+  _target_: diffusion_policy.policy.diffusion_unet_timm_mod1_policy.DiffusionUnetTimmMod1Policy
 
   shape_meta: ${shape_meta}
   
@@ -95,7 +95,6 @@ policy:
     imagenet_norm: True
 
   num_inference_steps: 8
-  obs_as_global_cond: True
   diffusion_step_embed_dim: 32
   down_dims: [256,512,1024]
   kernel_size: 5
@@ -162,7 +161,7 @@ training:
   tqdm_interval_sec: 1.0
 
 logging:
-  project: umi
+  project: hierarchical-policy
   resume: False
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}

@@ -1,21 +1,21 @@
-name: flip_up
+name: flip_up_baseline
 
-sparse_obs_rgb_down_sample_steps: 10
-sparse_obs_rgb_horizon: 1
+obs_down_sample_steps: 10 # 3, 1
+action_down_sample_steps: 10 # 3, 1
 
-sparse_obs_low_dim_down_sample_steps: 10
-sparse_obs_low_dim_horizon: 2
-
-sparse_action_down_sample_steps: 10
-sparse_action_horizon: 16
-
-
+low_dim_obs_horizon: 2
+img_obs_horizon: 1
+action_horizon: 16
 ignore_proprioception: False
+
 
 shape_meta: &shape_meta
   # acceptable types: rgb, low_dim
   # fields under raw and obs must be consistent with FlipUpDataset.raw_to_obs_action()
   raw: # describes what exists in data
+    # camera0_rgb:
+    #   shape: [3, 224, 224]
+    #   type: rgb
     camera1_rgb:
       shape: [3, 224, 224]
       type: rgb
@@ -32,50 +32,51 @@ shape_meta: &shape_meta
       shape: [6]
       type: low_dim
   obs:
+    # camera0_rgb:
+    #   shape: [3, 224, 224]
+    #   horizon: ${task.img_obs_horizon} # int
+    #   down_sample_steps: ${task.obs_down_sample_steps} # int
+    #   type: rgb
+    #   ignore_by_policy: False
     camera1_rgb:
       shape: [3, 224, 224]
+      horizon: ${task.img_obs_horizon} # int
+      down_sample_steps: ${task.obs_down_sample_steps} # int
       type: rgb
+      ignore_by_policy: False
     camera2_rgb:
       shape: [3, 224, 224]
+      horizon: ${task.img_obs_horizon} # int
+      down_sample_steps: ${task.obs_down_sample_steps} # int
       type: rgb
+      ignore_by_policy: False
     robot0_eef_pos:
       shape: [3]
+      horizon: ${task.low_dim_obs_horizon} # int
+      down_sample_steps: ${task.obs_down_sample_steps} # float
       type: low_dim
+      ignore_by_policy: ${task.ignore_proprioception}
     robot0_eef_rot_axis_angle: # exists in data
       raw_shape: [3]
       shape: [6]
+      horizon: ${task.low_dim_obs_horizon} # int
+      down_sample_steps: ${task.obs_down_sample_steps} # float
       type: low_dim
       rotation_rep: rotation_6d
+      ignore_by_policy: ${task.ignore_proprioception}
     robot0_eef_wrench:
       shape: [6]
+      horizon: ${task.low_dim_obs_horizon} # int
+      down_sample_steps: ${task.obs_down_sample_steps} # float
       type: low_dim
+      ignore_by_policy: ${task.ignore_proprioception}
+
   action: # computed from robot command
     shape: [9]
+    horizon: ${task.action_horizon}
+    down_sample_steps: ${task.action_down_sample_steps} # int
     rotation_rep: rotation_6d
-  sample: # describes samples used in a batch
-          # keys here must exist in obs/action above.
-          # shape, type and rotation_rep are inherited from obs/action above.
-    obs:
-      sparse:
-        camera1_rgb:
-          horizon: ${task.sparse_obs_rgb_horizon} # int
-          down_sample_steps: ${task.sparse_obs_rgb_down_sample_steps} # int
-        camera2_rgb:
-          horizon: ${task.sparse_obs_rgb_horizon} # int
-          down_sample_steps: ${task.sparse_obs_rgb_down_sample_steps} # int
-        robot0_eef_pos:
-          horizon: ${task.sparse_obs_low_dim_horizon} # int
-          down_sample_steps: ${task.sparse_obs_low_dim_down_sample_steps} # float
-        robot0_eef_rot_axis_angle: # exists in data
-          horizon: ${task.sparse_obs_low_dim_horizon} # int
-          down_sample_steps: ${task.sparse_obs_low_dim_down_sample_steps} # float
-        robot0_eef_wrench:
-          horizon: ${task.sparse_obs_low_dim_horizon} # int
-          down_sample_steps: ${task.sparse_obs_low_dim_down_sample_steps} # float
-    action: # computed from robot command
-      sparse:
-        horizon: ${task.sparse_action_horizon}
-        down_sample_steps: ${task.sparse_action_down_sample_steps} # int
+
 task_name: &task_name flipup
 dataset_path: /home/yifanhou/data/flip_up_500_filtered
 
